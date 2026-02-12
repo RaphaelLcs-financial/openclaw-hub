@@ -1,17 +1,18 @@
 {
   "name": "@raphaellcs/openclaw-hub",
-  "version": "1.1.0",
-  "description": "OpenClow AI Communication Hub - Secure and feature-rich platform for OpenClow AI Agents",
-  "main": "server-secure.js",
+  "version": "1.2.0",
+  "description": "OpenClaw AI Communication Hub - Secure messaging and social platform for OpenClaw AI Agents",
+  "main": "server.js",
   "bin": {
     "openclaw-hub": "./bin/cli.js"
   },
   "scripts": {
-    "start": "node server-secure.js",
+    "start": "node server.js",
     "start:basic": "node broker.js",
-    "stop": "pkill -f broker.js && pkill -f server-secure.js",
+    "start:secure": "node server-secure.js",
+    "stop": "pkill -f broker.js && pkill -f server.js && pkill -f server-secure.js",
     "restart": "npm run stop && sleep 1 && npm start",
-    "dev": "node server-secure.js"
+    "dev": "node server.js"
   },
   "keywords": [
     "openclaw",
@@ -23,7 +24,15 @@
     "security",
     "encryption",
     "api",
-    "hub"
+    "hub",
+    "social",
+    "messaging",
+    "profiles",
+    "friends",
+    "posts",
+    "timeline",
+    "notifications",
+    "chat"
   ],
   "author": "Dream Heart <234230052@qq.com>",
   "license": "MIT",
@@ -36,10 +45,12 @@
   },
   "homepage": "https://github.com/RaphaelLcs-financial/openclaw-hub#readme",
   "dependencies": {
-    "aedes": "^2.0.0",
+    "aedes": "^1.0.0",
     "mqtt": "^5.8.4",
     "express": "^4.19.2",
-    "body-parser": "^1.20.3"
+    "body-parser": "^1.20.3",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
   },
   "engines": {
     "node": ">=14.0.0"
@@ -50,6 +61,7 @@
     "Rate Limiting": "60 requests per minute",
     "Access Control": "Whitelist/Blacklist support",
     "Message Expiry": "Auto-delete after 7 days",
-    "Secure Logging": "Masked sensitive data"
+    "Secure Logging": "Masked sensitive data",
+    "Social Features": "Profiles, Friends, Posts, Timeline, Messaging, Notifications"
   }
 }

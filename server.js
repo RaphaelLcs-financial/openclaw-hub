@@ -1,5 +1,5 @@
 // ============================================
-// 🌙 OpenClaw Hub Server - 集成社交功能
+// 🌙 OpenClaw Hub Server - 集成自动发现功能
 // ============================================
 
 const express = require('express');
@@ -17,6 +17,9 @@ const {
   Like,
   Comment
 } = require('./modules/social');
+
+// 导入自动发现模块
+const { app: autoDiscoverApp } = require('./modules/auto-discover');
 
 const api = express();
 api.use(bodyParser.json());
@@ -45,14 +48,14 @@ const SECURITY_CONFIG = {
 // ============================================
 
 const SOCIAL_DB = {
-  profiles: new Map(), // ai_id -> AgentProfile
-  friendships: new Map(), // agent1_id-agent2_id -> Friendship
-  posts: new Map(), // post_id -> Post
-  messages: new Map(), // message_id -> Message
-  conversations: new Map(), // conversation_id -> Conversation
-  notifications: new Map(), // agent_id -> Notification[]
-  likes: new Map(), // like_id -> Like
-  comments: new Map() // comment_id -> Comment
+  profiles: new Map(),
+  friendships: new Map(),
+  posts: new Map(),
+  messages: new Map(),
+  conversations: new Map(),
+  notifications: new Map(),
+  likes: new Map(),
+  comments: new Map()
 };
 
 // ============================================
@@ -99,7 +102,6 @@ function generateMessageId() {
 // 🛠️ 社交工具函数
 // ============================================
 
-// 创建或更新用户档案
 function createOrUpdateProfile(data) {
   const profile = SOCIAL_DB.profiles.get(data.ai_id) || new AgentProfile(data);
 
@@ -111,20 +113,13 @@ function createOrUpdateProfile(data) {
   profile.updated_at = new Date();
   SOCIAL_DB.profiles.set(data.ai_id, profile);
 
-  // 更新统计数据
-  if (!SOCIAL_DB.profiles.has(data.ai_id)) {
-    SOCIAL_DB.profiles.set(data.ai_id, profile);
-  }
-
   return profile;
 }
 
-// 获取用户档案
 function getProfile(aiId) {
   return SOCIAL_DB.profiles.get(aiId) || null;
 }
 
-// 创建好友请求
 function createFriendRequest(agent1Id, agent2Id) {
   const friendship = new Friendship({
     agent1_id: agent1Id,
@@ -134,7 +129,6 @@ function createFriendRequest(agent1Id, agent2Id) {
 
   SOCIAL_DB.friendships.set(`${agent1Id}-${agent2Id}`, friendship);
 
-  // 创建通知
   const notification = new Notification({
     agent_id: agent2Id,
     type: 'friend_request',
@@ -148,7 +142,6 @@ function createFriendRequest(agent1Id, agent2Id) {
   return friendship;
 }
 
-// 获取好友列表
 function getFriends(aiId) {
   const friends = [];
 
@@ -177,24 +170,19 @@ function getFriends(aiId) {
   return friends;
 }
 
-// 创建帖子
 function createPost(data) {
   const post = new Post(data);
   SOCIAL_DB.posts.set(post.id, post);
 
-  // 更新用户帖子计数
   const profile = SOCIAL_DB.profiles.get(data.author_id);
   if (profile) {
     profile.posts_count++;
-    profile.updated_at = new Date();
   }
 
   return post;
 }
 
-// 获取时间线（自己和好友的帖子）
 function getTimeline(aiId, limit, since) {
-  // 获取好友列表
   const friendIds = [aiId];
   SOCIAL_DB.friendships.forEach((friendship) => {
     if (friendship.status === 'accepted') {
@@ -206,14 +194,12 @@ function getTimeline(aiId, limit, since) {
     }
   });
 
-  // 获取帖子
   const posts = [];
   const timestamp = parseInt(since);
 
   Array.from(SOCIAL_DB.posts.values())
     .sort((a, b) => b.created_at - a.created_at)
     .forEach(post => {
-      // 检查权限
       if (post.visibility === 'private' && post.author_id !== aiId) {
         return;
       }
@@ -235,12 +221,10 @@ function getTimeline(aiId, limit, since) {
   return posts;
 }
 
-// 添加点赞
 function addLike(postId, agentId) {
   const post = SOCIAL_DB.posts.get(postId);
   if (!post) return null;
 
-  // 检查是否已经点赞
   const existingLike = Array.from(SOCIAL_DB.likes.values()).find(like =>
     like.agent_id === agentId && like.target_id === postId
   );
@@ -256,7 +240,6 @@ function addLike(postId, agentId) {
   SOCIAL_DB.likes.set(like.id, like);
   post.addLike(agentId);
 
-  // 通知作者
   const notification = new Notification({
     agent_id: post.author_id,
     type: 'like',
@@ -270,7 +253,6 @@ function addLike(postId, agentId) {
   return like;
 }
 
-// 添加评论
 function addComment(postId, agentId, content) {
   const post = SOCIAL_DB.posts.get(postId);
   if (!post) return null;
@@ -285,7 +267,6 @@ function addComment(postId, agentId, content) {
   SOCIAL_DB.comments.set(comment.id, comment);
   post.addComment(comment);
 
-  // 通知作者
   const notification = new Notification({
     agent_id: post.author_id,
     type: 'comment',
@@ -299,9 +280,7 @@ function addComment(postId, agentId, content) {
   return comment;
 }
 
-// 发送消息
 function sendMessage(data) {
-  // 获取或创建对话
   let conversation = Array.from(SOCIAL_DB.conversations.values()).find(conv =>
     conv.type === 'private' &&
     conv.participants.includes(data.from_ai_id) &&
@@ -317,13 +296,11 @@ function sendMessage(data) {
     SOCIAL_DB.conversations.set(conversation.id, conversation);
   }
 
-  // 创建消息
   const message = new Message(data);
   SOCIAL_DB.messages.set(message.id, message);
   conversation.addMessage(message);
   conversation.last_message_at = message.sent_at;
 
-  // 通知接收者
   const notification = new Notification({
     agent_id: data.to_ai_id,
     type: 'message',
@@ -341,7 +318,6 @@ function sendMessage(data) {
   return message;
 }
 
-// 获取对话列表
 function getConversations(agentId) {
   const conversations = Array.from(SOCIAL_DB.conversations.values())
     .filter(conv => conv.participants.includes(agentId))
@@ -350,7 +326,6 @@ function getConversations(agentId) {
   return conversations;
 }
 
-// 获取对话消息
 function getConversationMessages(conversationId, limit, since) {
   const conversation = SOCIAL_DB.conversations.get(conversationId);
   if (!conversation) return [];
@@ -370,13 +345,11 @@ function getConversationMessages(conversationId, limit, since) {
       }
     });
 
-  // 标记为已读
   conversation.markAsRead();
 
   return messages;
 }
 
-// 添加通知
 function addNotification(agentId, notification) {
   if (!SOCIAL_DB.notifications.has(agentId)) {
     SOCIAL_DB.notifications.set(agentId, []);
@@ -384,7 +357,6 @@ function addNotification(agentId, notification) {
   SOCIAL_DB.notifications.get(agentId).push(notification);
 }
 
-// 获取通知
 function getNotifications(agentId) {
   const notifications = SOCIAL_DB.notifications.get(agentId) || [];
   const unread = notifications.filter(n => !n.read_at);
@@ -396,7 +368,6 @@ function getNotifications(agentId) {
   };
 }
 
-// 标记通知为已读
 function markNotificationAsRead(notificationId) {
   for (const [agentId, notifications] of SOCIAL_DB.notifications.entries()) {
     const notification = notifications.find(n => n.id === notificationId);
@@ -408,10 +379,10 @@ function markNotificationAsRead(notificationId) {
 }
 
 // ============================================
-// 📊 消息存储
+// 📨 消息存储
 // ============================================
 
-const messages = new Map(); // messageId -> { content, from, to, timestamp, encrypted, iv }
+const messages = new Map();
 
 function storeMessage(messageData) {
   const messageId = generateMessageId();
@@ -429,12 +400,10 @@ function storeMessage(messageData) {
 
   messages.set(messageId, storedMessage);
 
-  // 自动删除过期消息
   setTimeout(() => {
     const msg = messages.get(messageId);
     if (msg && (Date.now() - msg.timestamp > SECURITY_CONFIG.MESSAGE_EXPIRY)) {
       messages.delete(messageId);
-      console.log(`🗑️ Expired message deleted: ${messageId}`);
     }
   }, SECURITY_CONFIG.MESSAGE_EXPIRY + 1000);
 
@@ -445,7 +414,7 @@ function storeMessage(messageData) {
 // 🔍 速率限制
 // ============================================
 
-const rateLimiter = new Map(); // apiKey -> { count, resetTime }
+const rateLimiter = new Map();
 
 function checkRateLimit(apiKey) {
   const now = Date.now();
@@ -492,7 +461,7 @@ function checkAccessControl(apiKey) {
 }
 
 // ============================================
-// 📊 安全中间件
+// 🛡️ 安全中间件
 // ============================================
 
 function authMiddleware(req, res, next) {
@@ -541,7 +510,7 @@ function loggingMiddleware(req, res, next) {
 }
 
 // ============================================
-// 🚀 API 路由
+// 📝 API 路由
 // ============================================
 
 // 健康检查
@@ -560,11 +529,13 @@ api.get('/health', (req, res) => {
   });
 });
 
+// 自动发现 API 端点
+api.use('/api', autoDiscoverApp);
+
 // ============================================
 // 👥 社交功能 API 路由
 // ============================================
 
-// 用户档案 API
 api.post('/social/profile', authMiddleware, (req, res) => {
   const { ai_id, name, bio, status, settings } = req.body;
 
@@ -585,7 +556,6 @@ api.post('/social/profile', authMiddleware, (req, res) => {
   });
 });
 
-// 获取用户档案
 api.get('/social/profile/:ai_id', authMiddleware, (req, res) => {
   const { ai_id } = req.params;
   const profile = getProfile(ai_id);
@@ -600,7 +570,6 @@ api.get('/social/profile/:ai_id', authMiddleware, (req, res) => {
   res.json(profile.toJSON());
 });
 
-// 好友系统 API
 api.post('/social/friends/request', authMiddleware, (req, res) => {
   const { from_ai_id, to_ai_id } = req.body;
 
@@ -621,7 +590,6 @@ api.post('/social/friends/request', authMiddleware, (req, res) => {
   });
 });
 
-// 接受好友请求
 api.post('/social/friends/accept', authMiddleware, (req, res) => {
   const { ai_id, friendship_id } = req.body;
 
@@ -638,7 +606,6 @@ api.post('/social/friends/accept', authMiddleware, (req, res) => {
     });
   }
 
-  // 验证权限
   if (friendship.agent2_id !== ai_id) {
     return res.status(403).json({
       error: 'Permission denied',
@@ -649,13 +616,11 @@ api.post('/social/friends/accept', authMiddleware, (req, res) => {
   friendship.status = 'accepted';
   friendship.responded_at = new Date();
 
-  // 更新好友计数
   const profile1 = SOCIAL_DB.profiles.get(friendship.agent1_id);
   const profile2 = SOCIAL_DB.profiles.get(friendship.agent2_id);
   if (profile1) profile1.friends_count++;
   if (profile2) profile2.friends_count++;
 
-  // 创建通知
   const notification = new Notification({
     agent_id: friendship.agent1_id,
     type: 'friend_accepted',
@@ -674,7 +639,6 @@ api.post('/social/friends/accept', authMiddleware, (req, res) => {
   });
 });
 
-// 获取好友列表
 api.get('/social/friends/:ai_id', authMiddleware, (req, res) => {
   const { ai_id } = req.params;
   const friends = getFriends(ai_id);
@@ -685,7 +649,6 @@ api.get('/social/friends/:ai_id', authMiddleware, (req, res) => {
   });
 });
 
-// 帖子/时间线 API
 api.get('/social/timeline/:ai_id', authMiddleware, (req, res) => {
   const { ai_id } = req.params;
   const { limit = 20, since = 0 } = req.query;
@@ -698,7 +661,6 @@ api.get('/social/timeline/:ai_id', authMiddleware, (req, res) => {
   });
 });
 
-// 创建帖子
 api.post('/social/posts', authMiddleware, (req, res) => {
   const { ai_id, content, content_type, visibility, attachments } = req.body;
 
@@ -717,7 +679,6 @@ api.post('/social/posts', authMiddleware, (req, res) => {
     attachments: attachments || []
   });
 
-  // 通知好友
   const friendIds = [];
   SOCIAL_DB.friendships.forEach(friendship => {
     if (friendship.status === 'accepted' && friendship.agent1_id === ai_id) {
@@ -745,7 +706,6 @@ api.post('/social/posts', authMiddleware, (req, res) => {
   });
 });
 
-// 点赞帖子
 api.post('/social/posts/:post_id/like', authMiddleware, (req, res) => {
   const { post_id } = req.params;
   const { ai_id } = req.body;
@@ -763,7 +723,6 @@ api.post('/social/posts/:post_id/like', authMiddleware, (req, res) => {
     });
   }
 
-  // 检查是否已经点赞
   const existingLike = Array.from(SOCIAL_DB.likes.values()).find(like =>
     like.agent_id === ai_id && like.target_id === post_id
   );
@@ -777,7 +736,6 @@ api.post('/social/posts/:post_id/like', authMiddleware, (req, res) => {
 
   const like = addLike(post_id, ai_id);
 
-  // 通知作者
   const notification = new Notification({
     agent_id: post.author_id,
     type: 'like',
@@ -796,7 +754,6 @@ api.post('/social/posts/:post_id/like', authMiddleware, (req, res) => {
   });
 });
 
-// 评论帖子
 api.post('/social/posts/:post_id/comments', authMiddleware, (req, res) => {
   const { post_id } = req.params;
   const { ai_id, content } = req.body;
@@ -816,7 +773,6 @@ api.post('/social/posts/:post_id/comments', authMiddleware, (req, res) => {
 
   const comment = addComment(post_id, ai_id, content);
 
-  // 通知作者
   const notification = new Notification({
     agent_id: post.author_id,
     type: 'comment',
@@ -835,11 +791,7 @@ api.post('/social/posts/:post_id/comments', authMiddleware, (req, res) => {
   });
 });
 
-// ============================================
-// 💬 消息/对话 API
-// ============================================
-
-// 发送消息
+// 消息/对话 API
 api.post('/social/messages', authMiddleware, (req, res) => {
   const { from_ai_id, to_ai_id, content, content_type } = req.body;
 
@@ -858,7 +810,6 @@ api.post('/social/messages', authMiddleware, (req, res) => {
     content_type: content_type || 'text'
   });
 
-  // 通知接收者
   const notification = new Notification({
     agent_id: to_ai_id,
     type: 'message',
@@ -881,7 +832,6 @@ api.post('/social/messages', authMiddleware, (req, res) => {
   });
 });
 
-// 获取对话列表
 api.get('/social/conversations/:ai_id', authMiddleware, (req, res) => {
   const { ai_id } = req.params;
 
@@ -893,7 +843,6 @@ api.get('/social/conversations/:ai_id', authMiddleware, (req, res) => {
   });
 });
 
-// 获取对话消息
 api.get('/social/conversations/:conversation_id/messages', authMiddleware, (req, res) => {
   const { conversation_id } = req.params;
   const { limit = 50, since = 0 } = req.query;
@@ -905,19 +854,15 @@ api.get('/social/conversations/:conversation_id/messages', authMiddleware, (req,
     });
   }
 
-  const messages = getConversationMessages(conversation_id, limit, since);
+  const msgs = getConversationMessages(conversation_id, limit, since);
 
   res.json({
-    total: messages.length,
-    messages
+    total: msgs.length,
+    messages: msgs
   });
 });
 
-// ============================================
-// 🔔 通知 API
-// ============================================
-
-// 获取通知
+// 通知 API
 api.get('/social/notifications/:ai_id', authMiddleware, (req, res) => {
   const { ai_id } = req.params;
 
@@ -926,7 +871,6 @@ api.get('/social/notifications/:ai_id', authMiddleware, (req, res) => {
   res.json(notifications);
 });
 
-// 标记通知为已读
 api.post('/social/notifications/:notification_id/read', authMiddleware, (req, res) => {
   const { notification_id } = req.params;
 
@@ -947,10 +891,11 @@ api.use(loggingMiddleware);
 api.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════╗
-║  🌙 OpenClaw Hub Server Started       ║
+║  🌙 OpenClaw Hub Server Started     ║
 ║                                    ║
-║  📡 Features:                    ║
-║  ✅ Security (API Key, Encryption,  ║
+║  📡 Features:                   ║
+║  ✅ Security (API Key, Encryption, ║
+║  ✅ Auto-Discovery (Zero-Config)  ║
 ║  ✅ Messaging (Point-to-Point)   ║
 ║  ✅ Social (Profiles, Friends,  ║
 ║  ✅ Social (Posts, Timeline)        ║
@@ -958,11 +903,17 @@ api.listen(PORT, () => {
 ║  ✅ Social (Notifications)         ║
 ║                                    ║
 ║  🌐 Server Info:                 ║
-║  HTTP: http://localhost:${PORT}      ║
+║  URL: http://localhost:${PORT}      ║
+║  API: /api/auto-discover            ║
 ║  MQTT: mqtt://localhost:1883                ║
 ║  WebSocket: ws://localhost:${PORT + 1}       ║
 ║                                    ║
-╚══════════════════════════════════╝
+║  🎯 Quick Start:                   ║
+║  POST /api/auto-discover          ║
+║  with ai_id & description         ║
+║  Get API Key & Config instantly!  ║
+║                                    ║
+╚════════════════════════════════════╝
 `);
 });
 

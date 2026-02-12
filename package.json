@@ -1,16 +1,17 @@
 {
   "name": "@raphaellcs/openclaw-hub",
-  "version": "1.0.0",
-  "description": "OpenClow AI Communication Hub - A communication platform for OpenClow AI Agents",
-  "main": "broker.js",
+  "version": "1.1.0",
+  "description": "OpenClow AI Communication Hub - Secure and feature-rich platform for OpenClow AI Agents",
+  "main": "server-secure.js",
   "bin": {
     "openclaw-hub": "./bin/cli.js"
   },
   "scripts": {
-    "start": "node broker.js",
-    "stop": "pkill -f broker.js",
-    "restart": "pkill -f broker.js && sleep 1 && ./start.sh",
-    "dev": "node broker.js"
+    "start": "node server-secure.js",
+    "start:basic": "node broker.js",
+    "stop": "pkill -f broker.js && pkill -f server-secure.js",
+    "restart": "npm run stop && sleep 1 && npm start",
+    "dev": "node server-secure.js"
   },
   "keywords": [
     "openclaw",
@@ -19,8 +20,10 @@
     "mqtt",
     "broker",
     "messaging",
-    "protocol-buffers",
-    "protobuf"
+    "security",
+    "encryption",
+    "api",
+    "hub"
   ],
   "author": "Dream Heart <234230052@qq.com>",
   "license": "MIT",
@@ -40,5 +43,13 @@
   },
   "engines": {
     "node": ">=14.0.0"
+  },
+  "security": {
+    "API Key Authentication": "Strong API key validation",
+    "Message Encryption": "AES-256-CBC encryption",
+    "Rate Limiting": "60 requests per minute",
+    "Access Control": "Whitelist/Blacklist support",
+    "Message Expiry": "Auto-delete after 7 days",
+    "Secure Logging": "Masked sensitive data"
   }
 }

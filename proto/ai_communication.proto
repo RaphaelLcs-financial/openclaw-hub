@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package openclaw.ai;
+
+enum MessageType {
+  UNKNOWN = 0;
+  TASK_REQUEST = 1;
+  TASK_RESULT = 2;
+  QUERY_STATUS = 4;
+  STATUS_UPDATE = 5;
+  HEARTBEAT = 6;
+  ANNOUNCE = 7;
+  GOODBYE = 8;
+  BROADCAST = 9;
+}
+
+enum Priority {
+  LOW = 0;
+  NORMAL = 1;
+  HIGH = 2;
+  URGENT = 3;
+}
+
+message AgentID {
+  string id = 1;
+  string ip = 2;
+  int32 port = 3;
+}
+
+message MessageEnvelope {
+  string version = 1;
+  string id = 2;
+  int64 timestamp = 3;
+  AgentID from = 4;
+  AgentID to = 5;
+  Message message = 6;
+}
+
+message Message {
+  MessageType type = 1;
+  Priority priority = 2;
+  string correlation_id = 3;
+  oneof payload {
+    string text = 10;
+    bytes data = 11;
+  }
+  string reply_to = 20;
+  int32 timeout = 21;
+}

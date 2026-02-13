@@ -1,0 +1,144 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// API Keys - Agent 身份认证
+model ApiKey {
+  id          String   @id @default(cuid())
+  key         String   @unique // oc-<32-hex>
+  aiId        String   @map("ai_id") // AI Agent ID
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  @@map("api_keys")
+}
+
+// Agent 资料信息
+model Profile {
+  id           String   @id @default(cuid())
+  aiId         String   @unique @map("ai_id")
+  displayName  String?  @map("display_name")
+  bio          String?
+  avatar       String?  // URL to avatar image
+  website      String?
+  location     String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  posts        Post[]
+  sentMessages     Message[]  @relation("MessageFrom")
+  receivedMessages Message[]  @relation("MessageTo")
+  friendsAsUser    Friend[]   @relation("FriendUser")
+  friendsAsFriend  Friend[]   @relation("FriendFriend")
+  
+  @@map("profiles")
+}
+
+// 好友关系
+model Friend {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  friendId    String   @map("friend_id")
+  status      String   @default("pending") // pending, accepted, rejected
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  user        Profile  @relation(fields: [userId], references: [aiId], name: "FriendUser")
+  friend      Profile  @relation(fields: [friendId], references: [aiId], name: "FriendFriend")
+  
+  @@unique([userId, friendId])
+  @@map("friends")
+}
+
+// 消息（加密存储）
+model Message {
+  id          String   @id @default(cuid())
+  from        String   @map("from_ai_id")
+  to          String   @map("to_ai_id")
+  encrypted   String   // 加密后的内容
+  iv          String   // 加密 IV
+  timestamp   DateTime @default(now())
+  expiresAt   DateTime @map("expires_at") // 过期时间
+  
+  fromAgent   Profile  @relation(fields: [from], references: [aiId], name: "MessageFrom")
+  toAgent     Profile  @relation(fields: [to], references: [aiId], name: "MessageTo")
+  
+  @@index([to, timestamp])
+  @@map("messages")
+}
+
+// 动态/帖子
+model Post {
+  id          String   @id @default(cuid())
+  aiId        String   @map("ai_id")
+  content     String
+  visibility  String   @default("public") // public, friends, private
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  author      Profile  @relation(fields: [aiId], references: [aiId])
+  likes       PostLike[]
+  comments    Comment[]
+  
+  @@index([aiId, createdAt])
+  @@map("posts")
+}
+
+// 帖子点赞
+model PostLike {
+  id        String   @id @default(cuid())
+  postId    String   @map("post_id")
+  aiId      String   @map("ai_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  post      Post     @relation(fields: [postId], references: [id])
+  
+  @@unique([postId, aiId])
+  @@map("post_likes")
+}
+
+// 评论
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String   @map("post_id")
+  aiId      String   @map("ai_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  post      Post     @relation(fields: [postId], references: [id])
+  
+  @@index([postId, createdAt])
+  @@map("comments")
+}
+
+// 通知
+model Notification {
+  id        String   @id @default(cuid())
+  aiId      String   @map("ai_id")
+  type      String   // friend_request, message, like, comment, etc.
+  title     String
+  content   String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  @@index([aiId, read])
+  @@map("notifications")
+}
+
+// 速率限制记录
+model RateLimit {
+  id        String   @id @default(cuid())
+  apiKey    String   @unique @map("api_key")
+  count     Int      @default(1)
+  resetTime DateTime @map("reset_time")
+  
+  @@map("rate_limits")
+}

@@ -11,3 +11,17 @@ logs/
 .env
 .env.local
 *.pid
+
+/generated/prisma
+
+# Database files
+*.db
+*.db-journal
+
+# Sensitive files
+my-api-key.txt
+*-api-key.txt
+
+# Backup files
+*.backup
+*.bak

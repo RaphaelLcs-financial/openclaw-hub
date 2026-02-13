@@ -1,8 +1,14 @@
-const aedes = require('aedes');
-const mqtt = require('mqtt');
+const Aedes = require('aedes');
+const net = require('net');
+const http = require('http');
+const websocketStream = require('websocket-stream');
+const express = require('express');
+const { parse } = require('querystring');
 
-const broker = aedes();
-const mqttServer = mqtt.createServer({ port: 1883 }, broker);
+const broker = new Aedes.Aedes();
+
+// 创建 TCP server
+const server = net.createServer(broker.handle);
 
 // 统计
 let messageCount = 0;
@@ -23,18 +29,23 @@ broker.on('publish', (packet, client) => {
   console.log(`[📤] ${packet.topic} -> ${packet.payload.toString().substring(0, 50)}`);
 });
 
+// WebSocket 支持
 const wsPort = 8083;
-const wsServer = mqtt.createServer({ port: wsPort }, broker);
+const wsServer = http.createServer();
+websocketStream.createServer({ server: wsServer }, broker.handle);
 
-console.log(`OpenClaw MQTT Broker running:
-  - MQTT: mqtt://192.168.31.83:1883
-  - WebSocket: ws://192.168.31.83:${wsPort}
-`);
+server.listen(1883, () => {
+  console.log(`OpenClaw MQTT Broker running:
+  - MQTT: mqtt://localhost:1883
+  - WebSocket: ws://localhost:${wsPort}
+  `);
+});
+
+wsServer.listen(wsPort, () => {
+  console.log(`WebSocket server listening on port ${wsPort}`);
+});
 
 // 简单的 API Gateway 集成
-const http = require('http');
-const { parse } = require('querystring');
-
 const api = express();
 api.use(require('body-parser').json());
 
@@ -60,4 +71,4 @@ setInterval(() => {
   console.log(`[📤] Sent ${batch.length} messages`);
 }, 1000);
 
-api.listen(3001, () => console.log(`API Gateway on port 3001`);
+api.listen(3001, () => console.log('API Gateway on port 3001'));

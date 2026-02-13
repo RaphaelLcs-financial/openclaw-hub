@@ -6,6 +6,20 @@ const api = express();
 api.use(bodyParser.json());
 
 // ============================================
+// 💾 数据库配置
+// ============================================
+
+// 检查是否启用数据库模式
+const USE_DATABASE = process.env.USE_DATABASE === 'true' || process.argv.includes('--db');
+const prisma = USE_DATABASE ? require('./prisma') : null;
+
+if (USE_DATABASE) {
+  console.log('📊 Database mode enabled (SQLite with Prisma)');
+} else {
+  console.log('💾 Memory mode enabled (data will not persist after restart)');
+}
+
+// ============================================
 // 🔒 安全配置
 // ============================================
 
@@ -120,69 +134,151 @@ function generateMessageId() {
 // 📨 消息存储（带安全）
 // ============================================
 
+// 内存存储（用于非数据库模式）
 const messages = new Map(); // messageId -> { content, from, to, timestamp, encrypted, iv }
+const apiKeys = new Map(); // apiKey -> { ai_id, createdAt }
+const profiles = new Map(); // ai_id -> profile data
+const rateLimiter = new Map(); // apiKey -> { count, resetTime }
 
-function storeMessage(messageData) {
+/**
+ * 存储消息（支持内存和数据库模式）
+ */
+async function storeMessage(messageData) {
   const messageId = generateMessageId();
   const encryption = encryptMessage(messageData.content, SECURITY_CONFIG.API_SECRET);
 
-  const storedMessage = {
-    id: messageId,
-    from: messageData.from,
-    to: messageData.to,
-    timestamp: Date.now(),
-    encrypted: encryption.encrypted,
-    iv: encryption.iv,
-    ...messageData
-  };
+  const now = Date.now();
+  const expiresAt = new Date(now + SECURITY_CONFIG.MESSAGE_EXPIRY);
 
-  messages.set(messageId, storedMessage);
+  if (USE_DATABASE && prisma) {
+    // 数据库模式
+    try {
+      const storedMessage = await prisma.message.create({
+        data: {
+          id: messageId,
+          from: messageData.from,
+          to: messageData.to,
+          encrypted: encryption.encrypted,
+          iv: encryption.iv,
+          timestamp: new Date(now),
+          expiresAt: expiresAt
+        }
+      });
 
-  // 自动删除过期消息
-  setTimeout(() => {
-    const msg = messages.get(messageId);
-    if (msg && (Date.now() - msg.timestamp > SECURITY_CONFIG.MESSAGE_EXPIRY)) {
-      messages.delete(messageId);
-      console.log(`🗑️ Expired message deleted: ${messageId}`);
+      console.log(`[💾] Message stored in database: ${messageId}`);
+      return storedMessage.id;
+    } catch (error) {
+      console.error('❌ Database store failed:', error.message);
+      throw error;
     }
-  }, SECURITY_CONFIG.MESSAGE_EXPIRY + 1000);
+  } else {
+    // 内存模式
+    const storedMessage = {
+      id: messageId,
+      from: messageData.from,
+      to: messageData.to,
+      timestamp: now,
+      encrypted: encryption.encrypted,
+      iv: encryption.iv,
+      ...messageData
+    };
 
-  return messageId;
+    messages.set(messageId, storedMessage);
+
+    // 自动删除过期消息
+    setTimeout(() => {
+      const msg = messages.get(messageId);
+      if (msg && (Date.now() - msg.timestamp > SECURITY_CONFIG.MESSAGE_EXPIRY)) {
+        messages.delete(messageId);
+        console.log(`🗑️ Expired message deleted: ${messageId}`);
+      }
+    }, SECURITY_CONFIG.MESSAGE_EXPIRY + 1000);
+
+    return messageId;
+  }
 }
 
 // ============================================
 // 🔍 速率限制
 // ============================================
 
-const rateLimiter = new Map(); // apiKey -> { count, resetTime }
-
-function checkRateLimit(apiKey) {
+async function checkRateLimit(apiKey) {
   const now = Date.now();
-  const limit = rateLimiter.get(apiKey);
+  const resetTime = new Date(now + SECURITY_CONFIG.RATE_LIMIT.windowMs);
 
-  if (!limit) {
-    rateLimiter.set(apiKey, {
-      count: 1,
-      resetTime: now + SECURITY_CONFIG.RATE_LIMIT.windowMs
-    });
+  if (USE_DATABASE && prisma) {
+    // 数据库模式
+    try {
+      const limit = await prisma.rateLimit.findUnique({
+        where: { apiKey }
+      });
+
+      if (!limit) {
+        await prisma.rateLimit.create({
+          data: {
+            apiKey,
+            count: 1,
+            resetTime
+          }
+        });
+        return true;
+      }
+
+      if (now > limit.resetTime.getTime()) {
+        // 重置计数
+        await prisma.rateLimit.update({
+          where: { apiKey },
+          data: {
+            count: 1,
+            resetTime
+          }
+        });
+        return true;
+      }
+
+      if (limit.count >= SECURITY_CONFIG.RATE_LIMIT.maxRequests) {
+        return false;
+      }
+
+      await prisma.rateLimit.update({
+        where: { apiKey },
+        data: {
+          count: limit.count + 1
+        }
+      });
+      return true;
+    } catch (error) {
+      console.error('❌ Rate limit check failed:', error.message);
+      return false;
+    }
+  } else {
+    // 内存模式
+    const limit = rateLimiter.get(apiKey);
+
+    if (!limit) {
+      rateLimiter.set(apiKey, {
+        count: 1,
+        resetTime: now + SECURITY_CONFIG.RATE_LIMIT.windowMs
+      });
+      return true;
+    }
+
+    if (now > limit.resetTime) {
+      // 重置计数
+      rateLimiter.set(apiKey, {
+        count: 1,
+        resetTime: now + SECURITY_CONFIG.RATE_LIMIT.windowMs
+      });
+      return true;
+    }
+
+    if (limit.count >= SECURITY_CONFIG.RATE_LIMIT.maxRequests) {
+      return false;
+    }
+
+    limit.count++;
     return true;
   }
-
-  if (now > limit.resetTime) {
-    // 重置计数
-    rateLimiter.set(apiKey, {
-      count: 1,
-      resetTime: now + SECURITY_CONFIG.RATE_LIMIT.windowMs
-    });
-    return true;
-  }
-
-  if (limit.count >= SECURITY_CONFIG.RATE_LIMIT.maxRequests) {
-    return false;
-  }
-
-  limit.count++;
-  return true;
 }
 
 // ============================================
@@ -210,7 +306,7 @@ function checkAccessControl(apiKey) {
 /**
  * API Key 验证中间件
  */
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const apiKey = req.headers['x-api-key'];
 
   if (!apiKey) {
@@ -236,8 +332,9 @@ function authMiddleware(req, res, next) {
     });
   }
 
-  // 检查速率限制
-  if (!checkRateLimit(apiKey)) {
+  // 检查速率限制（现在是异步的）
+  const allowed = await checkRateLimit(apiKey);
+  if (!allowed) {
     return res.status(429).json({
       error: 'Rate limit exceeded',
       message: `Maximum ${SECURITY_CONFIG.RATE_LIMIT.maxRequests} requests per ${SECURITY_CONFIG.RATE_LIMIT.windowMs / 1000} seconds`,
@@ -267,49 +364,88 @@ function loggingMiddleware(req, res, next) {
 // ============================================
 
 // 注册 AI Agent
-api.post('/api/register', (req, res) => {
-  const { ai_id, description } = req.body;
+api.post('/api/register', async (req, res) => {
+  try {
+    const { ai_id, description } = req.body;
 
-  // 验证输入
-  if (!ai_id || typeof ai_id !== 'string' || ai_id.length < 3 || ai_id.length > 50) {
-    return res.status(400).json({
-      error: 'Invalid ai_id',
-      message: 'ai_id must be 3-50 characters'
+    // 验证输入
+    if (!ai_id || typeof ai_id !== 'string' || ai_id.length < 3 || ai_id.length > 50) {
+      return res.status(400).json({
+        error: 'Invalid ai_id',
+        message: 'ai_id must be 3-50 characters'
+      });
+    }
+
+    if (description && typeof description !== 'string' && description.length > 500) {
+      return res.status(400).json({
+        error: 'Invalid description',
+        message: 'description must be less than 500 characters'
+      });
+    }
+
+    // 生成 API Key
+    const apiKey = generateAPIKey();
+
+    if (USE_DATABASE && prisma) {
+      // 数据库模式
+      // 先创建 Profile（如果不存在）
+      await prisma.profile.upsert({
+        where: { aiId: ai_id },
+        create: {
+          aiId: ai_id,
+          displayName: ai_id
+        },
+        update: {}
+      });
+
+      // 创建 API Key
+      await prisma.apiKey.create({
+        data: {
+          key: apiKey,
+          aiId: ai_id,
+          description: description || null
+        }
+      });
+
+      console.log(`[💾] Registered in database: ${ai_id} -> ${apiKey.substring(0, 8)}...`);
+    } else {
+      // 内存模式
+      apiKeys.set(apiKey, {
+        ai_id,
+        description,
+        createdAt: new Date().toISOString()
+      });
+
+      console.log(`[+] Registered: ${ai_id} -> ${apiKey.substring(0, 8)}...`);
+    }
+
+    res.json({
+      ok: true,
+      api_key: apiKey,
+      ai_id,
+      created_at: new Date().toISOString(),
+      message: 'API Key generated successfully',
+      storage: USE_DATABASE ? 'database' : 'memory'
+    });
+  } catch (error) {
+    console.error('❌ Registration failed:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
     });
   }
-
-  if (description && typeof description !== 'string' && description.length > 500) {
-    return res.status(400).json({
-      error: 'Invalid description',
-      message: 'description must be less than 500 characters'
-    });
-  }
-
-  // 生成 API Key
-  const apiKey = generateAPIKey();
-
-  // 存储注册信息（实际应用应该使用数据库）
-  console.log(`[+] Registered: ${ai_id} -> ${apiKey.substring(0, 8)}...`);
-
-  res.json({
-    ok: true,
-    api_key: apiKey,
-    ai_id,
-    created_at: new Date().toISOString(),
-    message: 'API Key generated successfully'
-  });
 });
 
 // 发送消息
-api.post('/send', authMiddleware, (req, res) => {
+api.post('/send', authMiddleware, async (req, res) => {
   try {
     const { from, to, message } = req.body;
 
     // 验证 from 和 to 是否匹配 API Key
     // （实际应用应该验证 API Key 对应的 AI ID）
 
-    // 存储消息（加密）
-    const messageId = storeMessage({
+    // 存储消息（加密）- 现在是异步的
+    const messageId = await storeMessage({
       from,
       to,
       content: message
@@ -333,102 +469,231 @@ api.post('/send', authMiddleware, (req, res) => {
 });
 
 // 查看收件箱
-api.get('/inbox/:ai_id', authMiddleware, (req, res) => {
-  const { ai_id } = req.params;
-  const { limit = 50, since = 0 } = req.query;
+api.get('/inbox/:ai_id', authMiddleware, async (req, res) => {
+  try {
+    const { ai_id } = req.params;
+    const { limit = 50, since = 0 } = req.query;
 
-  // 从存储中获取消息（应该从实际数据库读取）
-  const userMessages = [];
-  messages.forEach((msg, msgId) => {
-    if (msg.to === ai_id) {
+    let userMessages = [];
+
+    if (USE_DATABASE && prisma) {
+      // 数据库模式
+      const messages = await prisma.message.findMany({
+        where: {
+          to: ai_id,
+          timestamp: {
+            gte: new Date(Number(since))
+          }
+        },
+        orderBy: {
+          timestamp: 'desc'
+        },
+        take: Number(limit)
+      });
+
       // 解密消息
-      const decrypted = decryptMessage(msg.encrypted, msg.iv, SECURITY_CONFIG.API_SECRET);
-      if (decrypted) {
-        userMessages.push({
-          id: msgId,
+      userMessages = messages.map(msg => {
+        const decrypted = decryptMessage(msg.encrypted, msg.iv, SECURITY_CONFIG.API_SECRET);
+        return {
+          id: msg.id,
           from: msg.from,
           to: msg.to,
-          timestamp: msg.timestamp,
+          timestamp: msg.timestamp.getTime(),
           content: decrypted
-        });
-      }
+        };
+      });
+    } else {
+      // 内存模式
+      messages.forEach((msg, msgId) => {
+        if (msg.to === ai_id) {
+          // 解密消息
+          const decrypted = decryptMessage(msg.encrypted, msg.iv, SECURITY_CONFIG.API_SECRET);
+          if (decrypted) {
+            userMessages.push({
+              id: msgId,
+              from: msg.from,
+              to: msg.to,
+              timestamp: msg.timestamp,
+              content: decrypted
+            });
+          }
+        }
+      });
+
+      // 过滤和分页
+      userMessages = userMessages.filter(msg => msg.timestamp >= since);
+      userMessages.sort((a, b) => b.timestamp - a.timestamp);
+      userMessages = userMessages.slice(0, limit);
     }
-  });
 
-  // 过滤和分页
-  let filteredMessages = userMessages.filter(msg => msg.timestamp >= since);
-  filteredMessages.sort((a, b) => b.timestamp - a.timestamp);
-  filteredMessages = filteredMessages.slice(0, limit);
-
-  res.json({
-    total: filteredMessages.length,
-    messages: filteredMessages
-  });
+    res.json({
+      total: userMessages.length,
+      messages: userMessages,
+      storage: USE_DATABASE ? 'database' : 'memory'
+    });
+  } catch (error) {
+    console.error('❌ Inbox fetch failed:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
 });
 
 // 删除消息
-api.delete('/messages/:message_id', authMiddleware, (req, res) => {
-  const { message_id } = req.params;
+api.delete('/messages/:message_id', authMiddleware, async (req, res) => {
+  try {
+    const { message_id } = req.params;
 
-  // 验证消息是否属于发送者
-  const message = messages.get(message_id);
-  if (!message) {
-    return res.status(404).json({
-      error: 'Message not found',
-      message: 'Message does not exist or has been deleted'
+    if (USE_DATABASE && prisma) {
+      // 数据库模式
+      const message = await prisma.message.findUnique({
+        where: { id: message_id }
+      });
+
+      if (!message) {
+        return res.status(404).json({
+          error: 'Message not found',
+          message: 'Message does not exist or has been deleted'
+        });
+      }
+
+      // 验证权限（消息必须是发送者删除的）
+      if (message.from !== req.apiKey) {
+        return res.status(403).json({
+          error: 'Permission denied',
+          message: 'You can only delete your own messages'
+        });
+      }
+
+      // 删除消息
+      await prisma.message.delete({
+        where: { id: message_id }
+      });
+
+      console.log(`[🗑️] Deleted message from database: ${message_id}`);
+    } else {
+      // 内存模式
+      const message = messages.get(message_id);
+      if (!message) {
+        return res.status(404).json({
+          error: 'Message not found',
+          message: 'Message does not exist or has been deleted'
+        });
+      }
+
+      // 验证权限（消息必须是发送者删除的）
+      if (message.from !== req.apiKey) {
+        return res.status(403).json({
+          error: 'Permission denied',
+          message: 'You can only delete your own messages'
+        });
+      }
+
+      // 删除消息
+      messages.delete(message_id);
+      console.log(`[🗑️] Deleted message: ${message_id}`);
+    }
+
+    res.json({
+      ok: true,
+      message: 'Message deleted successfully'
+    });
+  } catch (error) {
+    console.error('❌ Delete message failed:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
     });
   }
-
-  // 验证权限（消息必须是发送者删除的）
-  if (message.from !== req.apiKey) {
-    // 实际应用应该验证 API Key 对应的 AI ID
-    return res.status(403).json({
-      error: 'Permission denied',
-      message: 'You can only delete your own messages'
-    });
-  }
-
-  // 删除消息
-  messages.delete(message_id);
-  console.log(`[🗑️] Deleted message: ${message_id}`);
-
-  res.json({
-    ok: true,
-    message: 'Message deleted successfully'
-  });
 });
 
 // 查看所有已注册的 AI
-api.get('/api/agents', (req, res) => {
-  // 返回所有 AI 信息（实际应用应该从数据库读取）
-  const agents = [];
+api.get('/api/agents', async (req, res) => {
+  try {
+    let agents = [];
 
-  messages.forEach((msg, msgId) => {
-    if (!agents.find(a => a.ai_id === msg.from)) {
-      agents.push({
-        ai_id: msg.from,
-        registered_at: msg.timestamp,
-        message_count: 1 // 简化统计
+    if (USE_DATABASE && prisma) {
+      // 数据库模式
+      const profiles = await prisma.profile.findMany({
+        include: {
+          _count: {
+            select: {
+              posts: true,
+              sentMessages: true,
+              receivedMessages: true
+            }
+          }
+        }
+      });
+
+      agents = profiles.map(profile => ({
+        ai_id: profile.aiId,
+        display_name: profile.displayName,
+        registered_at: profile.createdAt,
+        message_count: profile._count.sentMessages + profile._count.receivedMessages,
+        post_count: profile._count.posts
+      }));
+    } else {
+      // 内存模式
+      messages.forEach((msg, msgId) => {
+        if (!agents.find(a => a.ai_id === msg.from)) {
+          agents.push({
+            ai_id: msg.from,
+            registered_at: msg.timestamp,
+            message_count: 1 // 简化统计
+          });
+        }
       });
     }
-  });
 
-  res.json({
-    total: agents.length,
-    agents
-  });
+    res.json({
+      total: agents.length,
+      agents,
+      storage: USE_DATABASE ? 'database' : 'memory'
+    });
+  } catch (error) {
+    console.error('❌ Agents fetch failed:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
 });
 
 // 健康检查
-api.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    connections: agentCount,
-    messages: messages.size
-  });
+api.get('/health', async (req, res) => {
+  try {
+    let stats = {
+      connections: 0,
+      messages: 0
+    };
+
+    if (USE_DATABASE && prisma) {
+      // 数据库模式
+      stats.connections = await prisma.apiKey.count();
+      stats.messages = await prisma.message.count();
+    } else {
+      // 内存模式
+      stats.connections = apiKeys.size;
+      stats.messages = messages.size;
+    }
+
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      storage: USE_DATABASE ? 'database' : 'memory',
+      ...stats
+    });
+  } catch (error) {
+    console.error('❌ Health check failed:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
 });
 
 // ============================================
@@ -439,6 +704,9 @@ const PORT = process.env.PORT || 3000;
 api.use(loggingMiddleware);
 
 api.listen(PORT, () => {
+  const storageMode = USE_DATABASE ? 'Database (SQLite)' : 'Memory (No Persistence)';
+  const productionTip = USE_DATABASE ? 'Using SQLite - consider PostgreSQL' : 'Enable database: USE_DATABASE=true';
+  
   console.log(`
 ╔══════════════════════════════════════╗
 ║  🚀 OpenClaw Hub Server Started         ║
@@ -451,6 +719,8 @@ api.listen(PORT, () => {
 ║  ✅ Message Expiry                     ║
 ║  ✅ Secure Logging                     ║
 ║                                          ║
+║  💾 Storage Mode: ${storageMode.padEnd(21)}║
+║                                          ║
 ║  🌐 Server Info:                          ║
 ║  URL: http://localhost:${PORT}             ║
 ║  MQTT: mqtt://localhost:1883                ║
@@ -460,11 +730,34 @@ api.listen(PORT, () => {
 ║  • Set API_SECRET env variable            ║
 ║  • Configure WHITELIST/BLACKLIST          ║
 ║  • Use HTTPS in production              ║
-║  • Use a real database (PostgreSQL)        ║
+║  • ${productionTip.padEnd(38)}║
 ║  • Set up proper backup                 ║
 ║                                          ║
 ╚══════════════════════════════════════╝
 `);
+});
+
+// 优雅关闭
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  
+  if (USE_DATABASE && prisma) {
+    await prisma.$disconnect();
+    console.log('✅ Database connection closed');
+  }
+  
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  
+  if (USE_DATABASE && prisma) {
+    await prisma.$disconnect();
+    console.log('✅ Database connection closed');
+  }
+  
+  process.exit(0);
 });
 
 module.exports = { app: api, SECURITY_CONFIG };

@@ -1,6 +1,6 @@
 {
   "name": "@raphaellcs/openclaw-hub",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "OpenClaw AI Communication Hub - Secure messaging and social platform for OpenClaw AI Agents",
   "main": "server.js",
   "bin": {
@@ -64,7 +64,8 @@
     "Access Control": "Whitelist/Blacklist support",
     "Message Expiry": "Auto-delete after 7 days",
     "Secure Logging": "Masked sensitive data",
-    "Social Features": "Profiles, Friends, Posts, Timeline, Messaging, Notifications"
+    "Social Features": "Profiles, Friends, Posts, Timeline, Messaging, Notifications",
+    "Database Persistence": "SQLite with Prisma ORM (optional)"
   },
   "devDependencies": {
     "prisma": "^7.4.0"

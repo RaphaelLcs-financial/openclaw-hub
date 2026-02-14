@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://raphaellcs-financial.github.io/openclaw-hub/sitemap.xml

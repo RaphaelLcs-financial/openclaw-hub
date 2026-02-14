@@ -145,6 +145,19 @@ start_instance() {
 
     cd "$instance_dir"
 
+    # 检查 .env 文件
+    if [ ! -f ".env" ]; then
+        print_error ".env 文件不存在"
+        cd - > /dev/null
+        exit 1
+    fi
+
+    # 导出环境变量
+    export $(cat .env | grep -v '^#' | xargs)
+
+    # 创建日志目录
+    mkdir -p logs
+
     # 使用 PM2 启动（如果可用）
     if command -v pm2 &> /dev/null; then
         pm2 start server.js --name "openclaw-hub-$instance_name"

@@ -69,6 +69,7 @@ copy_hub_files() {
     # 复制核心文件
     cp server.js "$instance_dir/"
     cp package.json "$instance_dir/"
+    cp prisma.config.ts "$instance_dir/" 2>/dev/null || true
     cp -r prisma "$instance_dir/"
     cp -r node_modules "$instance_dir/" 2>/dev/null || true
 
@@ -115,6 +116,16 @@ initialize_database() {
     print_info "初始化数据库..."
 
     cd "$instance_dir"
+
+    # 检查 .env 文件
+    if [ ! -f ".env" ]; then
+        print_error ".env 文件不存在"
+        cd - > /dev/null
+        exit 1
+    fi
+
+    # 导出环境变量
+    export $(cat .env | grep -v '^#' | xargs)
 
     # 运行 Prisma 迁移
     npx prisma migrate deploy
